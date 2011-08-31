@@ -1,0 +1,244 @@
+#!/bin/bash 
+set -e
+
+# ENV
+
+BOT_DIR=$(cd $(dirname $0); pwd ; )
+UPLOAD_DIR=$BOT_DIR/upload
+TARBALLS_DIR=$BOT_DIR
+CONFIGFILE=$BOT_DIR/$(basename $0).conf
+GIT_PACKAGE_DIR="/notexists"
+IMPORT_LAST_TARBALL=1
+BUILD=1
+UPLOAD=1
+EMAIL_ADDR="sileht@sileht.net"
+
+# FONCTION
+
+usage(){
+cat <<EOF
+usage: $(basename $0) OPTIONS PACKAGE_NAME
+        -h --help           this message
+        -i --no-import      don't check for tarball with uscan
+        -n --no-build       don't rebuild tarball and don't retag debian package
+        -u --no-upload      don't upload package to archive
+        -f --force          rebuild package with a new revision
+        -e --email          send a rapport
+EOF
+exit 0
+}
+
+cfg.parser () {
+    IFS=$'\n' && ini=( $(<$1) )              # convert to line-array
+    ini=( ${ini[*]//;*/} )                   # remove comments
+    ini=( ${ini[*]/#[/\}$'\n'cfg.section.} ) # set section prefix
+    ini=( ${ini[*]/%]/ \(} )                 # convert text2function (1)
+    ini=( ${ini[*]/=/=\( } )                 # convert item to array
+    ini=( ${ini[*]/%/ \)} )                  # close array parenthesis
+    ini=( ${ini[*]/%\( \)/\(\) \{} )         # convert text2function (2)
+    ini=( ${ini[*]/%\} \)/\}} )              # remove extra parenthesis
+    ini[0]=''                                # remove first element
+    ini[${#ini[*]} + 1]='}'                  # add the last brace
+    eval "$(echo "${ini[*]}")"               # eval the result
+}
+
+TMPDIR=$(mktemp -d /tmp/debbot-XXXXXX)
+LOGFILE=$TMPDIR/logfile
+log.begin () {
+    trap 'log.end' QUIT
+    starttime=$(date -u '+%s')
+    if [ "$EMAIL" ]; then
+        exec 6>&1
+        exec 7>&2
+        exec > $LOGFILE
+        exec 2>&1
+    fi
+}
+log.end () {
+    endtime=$(date -u '+%s')
+    success=$1
+    if [ "$EMAIL" ]; then
+        exec 1>&6 6>&-
+        exec 2>&7 7>&-
+        elaspedtime=$(date -u  -d@$(($endtime - $starttime)) '+%H:%M:%S')
+        name=" build of $PACKAGE_NAME in $elaspedtime"
+        title="[Failed] $name"
+        [ "$success" ] && title="[Success] $name"
+        cat > $TMPDIR/mail <<EOF
+$title
+
+EOF
+cat $LOGFILE >> $TMPDIR/mail
+        cat $TMPDIR/mail | mail -s "$title" $EMAIL_ADDR
+    fi
+}
+
+mkdir -p $BOT_DIR $UPLOAD_DIR $TARBALLS_DIR
+
+OPT_ARGS=$(getopt -o c:,f,u,b,i,h,e -l config:,force,no-upload,no-build,no-import,email,help -n "$(basename $0)" -- "$@")
+eval set -- "$OPT_ARGS"
+while true; do
+    case $1 in
+        -c|--config)
+            CONFIGFILE=$2
+            shift ; shift ;;
+        -f|--force)
+            UPDATE_REVISION=1
+            shift ;;
+        -u|--no-upload)
+            UPLOAD=
+            shift ;;
+        -b|--no-build)
+            BUILD=
+            shift ;;
+        -i|--no-import)
+            IMPORT_LAST_TARBALL=
+            shift ;;
+        -e|--email)
+            EMAIL=1
+            shift ;;
+        -h|--help)
+            usage ; shift ;;
+        --)
+            shift ; break ;;
+    esac
+done
+
+
+PACKAGE_NAME=$1
+
+cfg.parser $CONFIGFILE
+eval "cfg.section.$PACKAGE_NAME"
+
+if [ ! -d "$GIT_PACKAGE_DIR" -o ! -d "$GIT_PACKAGE_DIR/.git" ] ; then
+    echo "* $GIT_PACKAGE_DIR/.git not exists"
+    exit 1
+fi
+
+log.begin
+
+[ "$PRESCRIPT" ] && $PRESCRIPT
+
+# MAIN PART
+
+pushd $GIT_PACKAGE_DIR &>/dev/null
+
+package_name=$(head -1 debian/changelog | awk '{print $1}')
+git reset --hard &>/dev/null
+git clean -df &>/dev/null
+
+
+if [ "$IMPORT_LAST_TARBALL" ] ;then
+
+    echo "Import tarball for $package_name:"
+
+    set +e
+    uscan --rename
+    ret=$?
+    set -e
+
+    if [ $ret -ne 0 ] ; then
+        echo "Already up-to-date" 
+        [ "$UPDATE_REVISION" ] || exit 0
+    else
+        git-import-orig --no-interactive --uscan
+    fi
+fi
+
+# need find better method
+dversion=$(dpkg-parsechangelog | sed -n -e "s/^Version: //gp")
+revision=${dversion#*-}
+version=${dversion%-*}
+uversion=$(git tag -l upstream/* | sed -s -e 's,[^/]*/\(.*\),\1,g' -e 's/_/~/g' | sort -nr | head -1)
+
+need_update_changelog=
+if [ "$version" != "$uversion" ]; then
+    revision=1
+    need_update_changelog=1
+elif [ "$UPDATE_REVISION" ]; then
+    revision=$((revision + 1))
+    need_update_changelog=1
+fi
+
+dversion=$uversion-$revision
+version=${dversion%-*}
+
+if [ "$need_update_changelog" ]; then
+    git-dch -a -N $dversion
+    sed -i -e "s/\* UNRELEASED/* Snapshot version $version/g" debian/changelog
+    git commit -a -m "Change version to $dversion"
+fi
+
+echo "* Current version: $dversion"
+
+if [ "$BUILD" ] ; then
+    git-buildpackage --git-tag --git-retag --git-ignore-new --git-builder=true --git-export-dir=$TARBALLS_DIR --git-tarball-dir=$TARBALLS_DIR --git-force-create
+fi
+
+if [ "$BUILD" ] || [ "$UPLOAD" -a "$DPUT_UBUNTU_HOST" ] || [ "$UPLOAD" -a "$DPUT_DEBIAN_HOST" ]; then
+    for dist in sid natty squeeze wheezy maverick lucid ; do
+        
+        echo "Prepare $package_name ($version) for $dist"
+
+        sed -i -e "s/UNRELEASED/$dist/g" debian/changelog
+        case $dist in
+            natty|maverick|lucid) revision_addons="ubuntu1" ;;
+            sid|squeeze|wheezy) revision_addons="" ;;
+            *) echo "$dist not supported" ; exit 1 ;;
+        esac
+        case $dist in
+            sid|natty)
+                changefile="${package_name}_${dversion}${revision_addons}_source.changes"
+                buildfile="${package_name}_${dversion}${revision_addons}_source.build"
+                sed -i -e "s/$dversion/$dversion${revision_addons}/g" debian/changelog
+                buildopt=""
+                ;;
+            *) 
+                changefile="${package_name}_${dversion}${revision_addons}~${dist}_source.changes"
+                buildfile="${package_name}_${dversion}${revision_addons}~${dist}_source.build"
+                sed -i -e "s/$dversion/$dversion${revision_addons}~$dist/g" debian/changelog
+                buildopt="-sd"
+                ;;
+        esac
+        [ "$revision" != 1 ] && buildopt="-sd"
+
+        if [ "$BUILD" -a ! -f $UPLOAD_DIR/$buildfile ] ; then 
+            debuild --no-lintian -i\.git -I.git -S -d $buildopt
+            #dpkg-buildpackage -rfakeroot -S -i\.git -I.git -d $buildopt --source-option="--no-preparation"
+
+            for file in $(sed -n -e 's/^ [[:alnum:]]\{32\} [[:digit:]]* [^ ]* [^ ]* \([^ ]*\)$/\1/gp' ../$changefile) $changefile $buildfile; do
+                if [ "$file" != "${package_name}_${version%-*}.orig.tar.gz" ]; then
+                    mv -f ../$file $UPLOAD_DIR/
+                else
+                    cp -f ../$file $UPLOAD_DIR/
+                fi
+            done
+
+            git reset --hard &>/dev/null
+            git clean -df &>/dev/null
+        fi 
+
+        if [ "$UPLOAD" ] && [ "$DPUT_UBUNTU_HOST" -o "$DPUT_DEBIAN_HOST" ]; then
+
+            echo "Upload $package_name ($version) for $dist"
+
+            case $dist in
+                squeeze|wheezy|sid) [ "$DPUT_DEBIAN_HOST" ] &&  dput $DPUT_DEBIAN_HOST $UPLOAD_DIR/$changefile ;;
+                maverick|lucid|natty) [ "$DPUT_UBUNTU_HOST" ] && dput $DPUT_UBUNTU_HOST $UPLOAD_DIR/$changefile ;;
+                *) echo "No dput host found" ;;
+            esac
+        fi
+
+        echo 
+    done
+
+fi
+popd &>/dev/null
+
+file=${package_name}_${version}.orig.tar.gz
+rm -f $(readlink -f $file) $file
+
+echo "Finish"
+
+log.end 1
+
