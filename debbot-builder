@@ -11,6 +11,7 @@ GIT_PACKAGE_DIR="/notexists"
 IMPORT_LAST_TARBALL=1
 BUILD=1
 UPLOAD=1
+START_PRE_POST_SCRIPT=1
 EMAIL_ADDR="sileht@sileht.net"
 
 # FONCTION
@@ -22,6 +23,7 @@ usage: $(basename $0) OPTIONS PACKAGE_NAME
         -i --no-import      don't check for tarball with uscan
         -n --no-build       don't rebuild tarball and don't retag debian package
         -u --no-upload      don't upload package to archive
+        -p --no-post-pre    don't start post/pre script
         -f --force          rebuild package with a new revision
         -e --email          send a rapport
 EOF
@@ -75,10 +77,13 @@ cat $LOGFILE >> $TMPDIR/mail
 
 mkdir -p $BOT_DIR $UPLOAD_DIR $TARBALLS_DIR
 
-OPT_ARGS=$(getopt -o c:,f,u,b,i,h,e -l config:,force,no-upload,no-build,no-import,email,help -n "$(basename $0)" -- "$@")
+OPT_ARGS=$(getopt -o c:,f,u,b,i,h,e,p -l config:,force,no-post-pre,no-upload,no-build,no-import,email,help -n "$(basename $0)" -- "$@")
 eval set -- "$OPT_ARGS"
 while true; do
     case $1 in
+        -p|--no-post-pre)
+            START_PRE_POST_SCRIPT=
+            shift ;;
         -c|--config)
             CONFIGFILE=$2
             shift ; shift ;;
@@ -117,7 +122,7 @@ fi
 
 log.begin
 
-[ "$PRESCRIPT" ] && $PRESCRIPT
+[ "$START_PRE_POST_SCRIPT" ] && [ "$PRESCRIPT" ] && $PRESCRIPT
 
 # MAIN PART
 
@@ -147,8 +152,10 @@ fi
 
 # need find better method
 dversion=$(dpkg-parsechangelog | sed -n -e "s/^Version: //gp")
+epoq=${dversion%:*}
 revision=${dversion#*-}
 version=${dversion%-*}
+version=${version#*:}
 uversion=$(git tag -l upstream/* | sed -s -e 's,[^/]*/\(.*\),\1,g' -e 's/_/~/g' | sort -nr | head -1)
 
 need_update_changelog=
@@ -160,8 +167,9 @@ elif [ "$UPDATE_REVISION" ]; then
     need_update_changelog=1
 fi
 
-dversion=$uversion-$revision
-version=${dversion%-*}
+dversion=$epoq:$uversion-$revision
+fdversion=$uversion-$revision
+version=$uversion
 
 if [ "$need_update_changelog" ]; then
     git-dch -a -N $dversion
@@ -188,14 +196,14 @@ if [ "$BUILD" ] || [ "$UPLOAD" -a "$DPUT_UBUNTU_HOST" ] || [ "$UPLOAD" -a "$DPUT
         esac
         case $dist in
             sid|natty)
-                changefile="${package_name}_${dversion}${revision_addons}_source.changes"
-                buildfile="${package_name}_${dversion}${revision_addons}_source.build"
+                changefile="${package_name}_${fdversion}${revision_addons}_source.changes"
+                buildfile="${package_name}_${fdversion}${revision_addons}_source.build"
                 sed -i -e "s/$dversion/$dversion${revision_addons}/g" debian/changelog
                 buildopt=""
                 ;;
             *) 
-                changefile="${package_name}_${dversion}${revision_addons}~${dist}_source.changes"
-                buildfile="${package_name}_${dversion}${revision_addons}~${dist}_source.build"
+                changefile="${package_name}_${fdversion}${revision_addons}~${dist}_source.changes"
+                buildfile="${package_name}_${fdversion}${revision_addons}~${dist}_source.build"
                 sed -i -e "s/$dversion/$dversion${revision_addons}~$dist/g" debian/changelog
                 buildopt="-sd"
                 ;;
