@@ -111,6 +111,7 @@ done
 
 
 PACKAGE_NAME=$1
+[ -z "$PACKAGE_NAME" ] && usage
 
 cfg.parser $CONFIGFILE
 eval "cfg.section.$PACKAGE_NAME"
