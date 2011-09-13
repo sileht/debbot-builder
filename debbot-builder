@@ -129,9 +129,11 @@ log.begin
 
 pushd $GIT_PACKAGE_DIR &>/dev/null
 
-package_name=$(head -1 debian/changelog | awk '{print $1}')
 git reset --hard &>/dev/null
 git clean -df &>/dev/null
+git checkout master &>/dev/null
+
+package_name=$(head -1 debian/changelog | awk '{print $1}')
 
 
 if [ "$IMPORT_LAST_TARBALL" ] ;then
@@ -154,6 +156,7 @@ fi
 # need find better method
 dversion=$(dpkg-parsechangelog | sed -n -e "s/^Version: //gp")
 epoq=${dversion%:*}
+[ "$epoq" = "$dversion" ] && epoq=""
 revision=${dversion#*-}
 version=${dversion%-*}
 version=${version#*:}
@@ -168,7 +171,7 @@ elif [ "$UPDATE_REVISION" ]; then
     need_update_changelog=1
 fi
 
-dversion=$epoq:$uversion-$revision
+[ "$epoq" ] && dversion=$epoq:$uversion-$revision || dversion=$uversion-$revision
 fdversion=$uversion-$revision
 version=$uversion
 
