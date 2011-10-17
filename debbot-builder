@@ -188,18 +188,18 @@ if [ "$BUILD" ] ; then
 fi
 
 if [ "$BUILD" ] || [ "$UPLOAD" -a "$DPUT_UBUNTU_HOST" ] || [ "$UPLOAD" -a "$DPUT_DEBIAN_HOST" ]; then
-    for dist in sid natty squeeze wheezy maverick lucid ; do
+    for dist in sid oneiric natty squeeze wheezy maverick lucid ; do
         
         echo "Prepare $package_name ($version) for $dist"
 
         sed -i -e "s/UNRELEASED/$dist/g" debian/changelog
         case $dist in
-            natty|maverick|lucid) revision_addons="ubuntu1" ;;
+            oneiric|natty|maverick|lucid) revision_addons="ubuntu1" ;;
             sid|squeeze|wheezy) revision_addons="" ;;
             *) echo "$dist not supported" ; exit 1 ;;
         esac
         case $dist in
-            sid|natty)
+            sid|oneiric)
                 changefile="${package_name}_${fdversion}${revision_addons}_source.changes"
                 buildfile="${package_name}_${fdversion}${revision_addons}_source.build"
                 sed -i -e "s/$dversion/$dversion${revision_addons}/g" debian/changelog
@@ -212,6 +212,12 @@ if [ "$BUILD" ] || [ "$UPLOAD" -a "$DPUT_UBUNTU_HOST" ] || [ "$UPLOAD" -a "$DPUT
                 buildopt="-sd"
                 ;;
         esac
+        
+        for dep in $(echo eval echo \$DEPENDS_REMOVE_${dist}) ; do
+            sed -i '/^Build-Depends:/s/'$dep'//g' debian/control 
+        done
+        sed -i -e 's/,[, ]*/, /g' debian/control
+
         [ "$revision" != 1 ] && buildopt="-sd"
 
         if [ "$BUILD" -a ! -f $UPLOAD_DIR/$buildfile ] ; then 
@@ -236,7 +242,7 @@ if [ "$BUILD" ] || [ "$UPLOAD" -a "$DPUT_UBUNTU_HOST" ] || [ "$UPLOAD" -a "$DPUT
 
             case $dist in
                 squeeze|wheezy|sid) [ "$DPUT_DEBIAN_HOST" ] &&  dput $DPUT_DEBIAN_HOST $UPLOAD_DIR/$changefile ;;
-                maverick|lucid|natty) [ "$DPUT_UBUNTU_HOST" ] && dput $DPUT_UBUNTU_HOST $UPLOAD_DIR/$changefile ;;
+                oneiric|maverick|lucid|natty) [ "$DPUT_UBUNTU_HOST" ] && dput $DPUT_UBUNTU_HOST $UPLOAD_DIR/$changefile ;;
                 *) echo "No dput host found" ;;
             esac
         fi
