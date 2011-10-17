@@ -213,10 +213,10 @@ if [ "$BUILD" ] || [ "$UPLOAD" -a "$DPUT_UBUNTU_HOST" ] || [ "$UPLOAD" -a "$DPUT
                 ;;
         esac
         
-        for dep in $(echo eval echo \$DEPENDS_REMOVE_${dist}) ; do
+        for dep in $(eval echo \$DEPENDS_REMOVE_${dist}) ; do
             sed -i '/^Build-Depends:/s/'$dep'//g' debian/control 
         done
-        sed -i -e 's/,[, ]*/, /g' debian/control
+        sed -i -e '/^Build-Depends:/s/,[, ]*/, /g' debian/control
 
         [ "$revision" != 1 ] && buildopt="-sd"
 
