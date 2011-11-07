@@ -46,6 +46,13 @@ cfg.parser () {
 
 TMPDIR=$(mktemp -d /tmp/debbot-XXXXXX)
 LOGFILE=$TMPDIR/logfile
+
+cleanup(){
+    rm -rf $TMPDIR
+}
+
+trap cleanup EXIT
+
 log.begin () {
     trap 'log.end' QUIT
     starttime=$(date -u '+%s')
@@ -212,11 +219,25 @@ if [ "$BUILD" ] || [ "$UPLOAD" -a "$DPUT_UBUNTU_HOST" ] || [ "$UPLOAD" -a "$DPUT
                 buildopt="-sd"
                 ;;
         esac
-        
-        for dep in $(eval echo \$DEPENDS_REMOVE_${dist}) ; do
+
+        eval deps=(\${DEPENDS_REMOVE_$dist[@]})
+        for dep in ${deps[@]} ; do
+            echo "* Remove $dep for $dist"
             sed -i '/^Build-Depends:/s/'$dep'//g' debian/control 
         done
+
+        eval deps=(\${DEPENDS_ADD_$dist[@]})
+        for dep in $deps ; do
+            echo "* Add $dep for $dist"
+            sed -i '/^Build-Depends:/s/$/, '$dep'/g' debian/control 
+        done
+        
         sed -i -e '/^Build-Depends:/s/,[, ]*/, /g' debian/control
+
+        echo
+        echo '** Check dep:'
+        grep Build-Depend debian/control
+        echo
 
         [ "$revision" != 1 ] && buildopt="-sd"
 
