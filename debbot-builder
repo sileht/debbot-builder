@@ -11,6 +11,7 @@ GIT_PACKAGE_DIR="/notexists"
 IMPORT_LAST_TARBALL=1
 BUILD=1
 UPLOAD=1
+UPLOAD_TARBALL=
 START_PRE_POST_SCRIPT=1
 EMAIL_ADDR="sileht@sileht.net"
 
@@ -20,11 +21,12 @@ usage(){
 cat <<EOF
 usage: $(basename $0) OPTIONS PACKAGE_NAME
         -h --help           this message
-        -i --no-import      don't check for tarball with uscan
-        -n --no-build       don't rebuild tarball and don't retag debian package
-        -u --no-upload      don't upload package to archive
-        -p --no-post-pre    don't start post/pre script
-        -f --force          rebuild package with a new revision
+        -I --no-import      don't check for tarball with uscan
+        -B --no-build       don't rebuild tarball and don't retag debian package
+        -U --no-upload      don't upload package to archive
+        -P --no-post-pre    don't start post/pre script
+        -r --rebuild         rebuild package with a new revision
+        -f --force          force importation of orig.tag.gz
         -e --email          send a rapport
 EOF
 exit 0
@@ -50,11 +52,10 @@ LOGFILE=$TMPDIR/logfile
 cleanup(){
     rm -rf $TMPDIR
 }
-
 trap cleanup EXIT
 
 log.begin () {
-    trap 'log.end' QUIT
+    trap "log.end 0 1" EXIT
     starttime=$(date -u '+%s')
     if [ "$EMAIL" ]; then
         exec 6>&1
@@ -63,47 +64,57 @@ log.begin () {
         exec 2>&1
     fi
 }
+already_log_end=
 log.end () {
+    [ -n "$already_log_end" ] && return
+    already_log_end=1
+
+    success=$1 # 0 FAIL, 1 OK
+    sendmail=$2 # 0 NO MAIL, 1 MAIL
+    [ -z "$success" ] && success=0
+    [ -z "$sendmail" ] && sendmail=0
     endtime=$(date -u '+%s')
-    success=$1
     if [ "$EMAIL" ]; then
         exec 1>&6 6>&-
         exec 2>&7 7>&-
         elaspedtime=$(date -u  -d@$(($endtime - $starttime)) '+%H:%M:%S')
         name=" build of $PACKAGE_NAME in $elaspedtime"
         title="[Failed] $name"
-        [ "$success" ] && title="[Success] $name"
+        [ $success -eq 1 ] && title="[Success] $name"
         cat > $TMPDIR/mail <<EOF
 $title
 
 EOF
 cat $LOGFILE >> $TMPDIR/mail
-        cat $TMPDIR/mail | mail -s "$title" $EMAIL_ADDR
+        [ $sendmail -eq 1 ] && cat $TMPDIR/mail | mail -s "$title" $EMAIL_ADDR
     fi
 }
 
 mkdir -p $BOT_DIR $UPLOAD_DIR $TARBALLS_DIR
 
-OPT_ARGS=$(getopt -o c:,f,u,b,i,h,e,p -l config:,force,no-post-pre,no-upload,no-build,no-import,email,help -n "$(basename $0)" -- "$@")
+OPT_ARGS=$(getopt -o c:,r,f,U,B,I,h,e,P -l config:,rebuild,force,no-post-pre,no-upload,no-build,no-import,email,help -n "$(basename $0)" -- "$@")
 eval set -- "$OPT_ARGS"
 while true; do
     case $1 in
-        -p|--no-post-pre)
+        -P|--no-post-pre)
             START_PRE_POST_SCRIPT=
             shift ;;
         -c|--config)
             CONFIGFILE=$2
             shift ; shift ;;
-        -f|--force)
+        -r|--rebuild)
             UPDATE_REVISION=1
             shift ;;
-        -u|--no-upload)
+        -f|--force)
+            UPLOAD_TARBALL=1
+            shift ;;
+        -U|--no-upload)
             UPLOAD=
             shift ;;
-        -b|--no-build)
+        -B|--no-build)
             BUILD=
             shift ;;
-        -i|--no-import)
+        -I|--no-import)
             IMPORT_LAST_TARBALL=
             shift ;;
         -e|--email)
@@ -130,6 +141,7 @@ fi
 
 log.begin
 
+
 [ "$START_PRE_POST_SCRIPT" ] && [ "$PRESCRIPT" ] && $PRESCRIPT
 
 # MAIN PART
@@ -154,7 +166,7 @@ if [ "$IMPORT_LAST_TARBALL" ] ;then
 
     if [ $ret -ne 0 ] ; then
         echo "Already up-to-date" 
-        [ "$UPDATE_REVISION" ] || exit 0
+        [ "$UPDATE_REVISION" ] || { log.end 1 0 ; exit 0 ; }
     else
         git-import-orig --no-interactive --uscan
     fi
@@ -167,7 +179,7 @@ epoq=${dversion%:*}
 revision=${dversion##*-}
 version=${dversion%-*}
 version=${version#*:}
-uversion=$(git tag -l upstream/* | sed -s -e 's,[^/]*/\(.*\),\1,g' -e 's/_/~/g' | sort -nr | head -1)
+uversion=$(git tag -l upstream/* | sed -s -e 's,[^/]*/\(.*\),\1,g' -e 's/_/~/g' | sort -Vr | head -1)
 
 need_update_changelog=
 if [ "$version" != "$uversion" ]; then
@@ -188,20 +200,23 @@ if [ "$need_update_changelog" ]; then
     git commit -a -m "Change version to $dversion"
 fi
 
-echo "* Current version: $dversion"
+echo "* Current version: $dversion ($fdversion)"
 
 if [ "$BUILD" ] ; then
-    git-buildpackage --git-tag --git-retag --git-ignore-new --git-builder=true --git-export-dir=$TARBALLS_DIR --git-tarball-dir=$TARBALLS_DIR --git-force-create
+    git-buildpackage --git-tag --git-retag --git-ignore-new --git-builder=/bin/true --git-export-dir=$TARBALLS_DIR --git-tarball-dir=$TARBALLS_DIR --git-force-create
 fi
 
 if [ "$BUILD" ] || [ "$UPLOAD" -a "$DPUT_UBUNTU_HOST" ] || [ "$UPLOAD" -a "$DPUT_DEBIAN_HOST" ]; then
-    for dist in sid oneiric natty squeeze wheezy maverick lucid ; do
+    for dist in ${DISTS[@]} ; do
+    #for dist in sid oneiric natty squeeze wheezy maverick; do
+        git reset --hard &>/dev/null
+        git clean -df &>/dev/null
         
         echo "Prepare $package_name ($version) for $dist"
 
         sed -i -e "s/UNRELEASED/$dist/g" debian/changelog
         case $dist in
-            oneiric|natty|maverick|lucid) revision_addons="ubuntu1" ;;
+            precise|oneiric|natty|maverick|lucid) revision_addons="ubuntu1" ;;
             sid|squeeze|wheezy) revision_addons="" ;;
             *) echo "$dist not supported" ; exit 1 ;;
         esac
@@ -211,6 +226,8 @@ if [ "$BUILD" ] || [ "$UPLOAD" -a "$DPUT_UBUNTU_HOST" ] || [ "$UPLOAD" -a "$DPUT
                 buildfile="${package_name}_${fdversion}${revision_addons}_source.build"
                 sed -i -e "s/$dversion/$dversion${revision_addons}/g" debian/changelog
                 buildopt=""
+                [ "$revision" != 1 ] && buildopt="-sd"
+                [ -n "$UPLOAD_TARBALL" ] && buildopt="-sa"
                 ;;
             *) 
                 changefile="${package_name}_${fdversion}${revision_addons}~${dist}_source.changes"
@@ -219,6 +236,8 @@ if [ "$BUILD" ] || [ "$UPLOAD" -a "$DPUT_UBUNTU_HOST" ] || [ "$UPLOAD" -a "$DPUT
                 buildopt="-sd"
                 ;;
         esac
+        echo "version: $dversion${revision_addons}~$dist"
+        echo "changefile: $changefile"
 
         eval deps=(\${DEPENDS_REMOVE_$dist[@]})
         for dep in ${deps[@]} ; do
@@ -234,12 +253,19 @@ if [ "$BUILD" ] || [ "$UPLOAD" -a "$DPUT_UBUNTU_HOST" ] || [ "$UPLOAD" -a "$DPUT
         
         sed -i -e '/^Build-Depends:/s/,[, ]*/, /g' debian/control
 
+        echo '** Apply crappy hack'
+        eval scripts=(\${CRAPPY_HACK_$dist[@]})
+        for script in $scripts ; do
+            echo "* Apply $script for $dist"
+            $script
+        done
+        
+
         echo
         echo '** Check dep:'
         grep Build-Depend debian/control
         echo
 
-        [ "$revision" != 1 ] && buildopt="-sd"
 
         if [ "$BUILD" -a ! -f $UPLOAD_DIR/$buildfile ] ; then 
             debuild --no-lintian -i\.git -I.git -S -d $buildopt
@@ -253,8 +279,6 @@ if [ "$BUILD" ] || [ "$UPLOAD" -a "$DPUT_UBUNTU_HOST" ] || [ "$UPLOAD" -a "$DPUT
                 fi
             done
 
-            git reset --hard &>/dev/null
-            git clean -df &>/dev/null
         fi 
 
         if [ "$UPLOAD" ] && [ "$DPUT_UBUNTU_HOST" -o "$DPUT_DEBIAN_HOST" ]; then
@@ -278,6 +302,5 @@ file=${package_name}_${version}.orig.tar.gz
 rm -f $(readlink -f $file) $file
 
 echo "Finish"
-
-log.end 1
+log.end 1 1
 
