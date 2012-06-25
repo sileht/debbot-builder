@@ -216,12 +216,12 @@ if [ "$BUILD" ] || [ "$UPLOAD" -a "$DPUT_UBUNTU_HOST" ] || [ "$UPLOAD" -a "$DPUT
 
         sed -i -e "s/UNRELEASED/$dist/g" debian/changelog
         case $dist in
-            precise|oneiric|natty|maverick|lucid) revision_addons="ubuntu1" ;;
+            quantal|precise|oneiric|natty|maverick|lucid) revision_addons="ubuntu1" ;;
             sid|squeeze|wheezy) revision_addons="" ;;
             *) echo "$dist not supported" ; exit 1 ;;
         esac
         case $dist in
-            sid|oneiric)
+            sid|quantal)
                 changefile="${package_name}_${fdversion}${revision_addons}_source.changes"
                 buildfile="${package_name}_${fdversion}${revision_addons}_source.build"
                 sed -i -e "s/$dversion/$dversion${revision_addons}/g" debian/changelog
