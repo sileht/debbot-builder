@@ -22,6 +22,7 @@ cat <<EOF
 usage: $(basename $0) OPTIONS PACKAGE_NAME
         -h --help           this message
         -I --no-import      don't check for tarball with uscan
+        -i --import FILE    import tarball FILE
         -B --no-build       don't rebuild tarball and don't retag debian package
         -U --no-upload      don't upload package to archive
         -P --no-post-pre    don't start post/pre script
@@ -92,7 +93,7 @@ cat $LOGFILE >> $TMPDIR/mail
 
 mkdir -p $BOT_DIR $UPLOAD_DIR $TARBALLS_DIR
 
-OPT_ARGS=$(getopt -o c:,r,f,U,B,I,h,e,P -l config:,rebuild,force,no-post-pre,no-upload,no-build,no-import,email,help -n "$(basename $0)" -- "$@")
+OPT_ARGS=$(getopt -o c:,r,f,U,B,I,i:,h,e,P -l import:,config:,rebuild,force,no-post-pre,no-upload,no-build,no-import,email,help -n "$(basename $0)" -- "$@")
 eval set -- "$OPT_ARGS"
 while true; do
     case $1 in
@@ -117,6 +118,9 @@ while true; do
         -I|--no-import)
             IMPORT_LAST_TARBALL=
             shift ;;
+        -i|import)
+            IMPORT_LAST_TARBALL=$(readlink -f $2)
+            shift ; shift ;;
         -e|--email)
             EMAIL=1
             shift ;;
@@ -156,19 +160,21 @@ package_name=$(head -1 debian/changelog | awk '{print $1}')
 
 
 if [ "$IMPORT_LAST_TARBALL" ] ;then
-
     echo "Import tarball for $package_name:"
-
-    set +e
-    uscan --rename
-    ret=$?
-    set -e
-
-    if [ $ret -ne 0 ] ; then
-        echo "Already up-to-date" 
-        [ "$UPDATE_REVISION" ] || { log.end 1 0 ; exit 0 ; }
+    if [ -f "$IMPORT_LAST_TARBALL" ]; then
+        git-import-orig --no-interactive $IMPORT_LAST_TARBALL
     else
-        git-import-orig --no-interactive --uscan
+        set +e
+        uscan --rename
+        ret=$?
+        set -e
+
+        if [ $ret -ne 0 ] ; then
+            echo "Already up-to-date" 
+            [ "$UPDATE_REVISION" ] || { log.end 1 0 ; exit 0 ; }
+        else
+            git-import-orig --no-interactive --uscan
+        fi
     fi
 fi
 
@@ -287,7 +293,7 @@ if [ "$BUILD" ] || [ "$UPLOAD" -a "$DPUT_UBUNTU_HOST" ] || [ "$UPLOAD" -a "$DPUT
 
             case $dist in
                 squeeze|wheezy|sid) [ "$DPUT_DEBIAN_HOST" ] &&  dput $DPUT_DEBIAN_HOST $UPLOAD_DIR/$changefile ;;
-                oneiric|maverick|lucid|natty) [ "$DPUT_UBUNTU_HOST" ] && dput $DPUT_UBUNTU_HOST $UPLOAD_DIR/$changefile ;;
+                quantal|precise|oneiric|maverick|lucid|natty) [ "$DPUT_UBUNTU_HOST" ] && dput $DPUT_UBUNTU_HOST $UPLOAD_DIR/$changefile ;;
                 *) echo "No dput host found" ;;
             esac
         fi
